@@ -43,6 +43,78 @@ def _emergency_mode() -> bool:
     return os.getenv("ODYSSEUS_GUARD_EMERGENCY", "false").lower() == "true"
 
 
+def _block_clouds() -> bool:
+    return os.getenv("ODYSSEUS_GUARD_BLOCK_CLOUDS", "false").lower() == "true"
+
+
+def _env_list(name: str) -> list[str]:
+    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+
+
+class _MaxMindGeoIPHandler:
+    """GeoIPHandler (guard-core protocol) backed by a MaxMind country database.
+
+    Opt-in and only constructed when ODYSSEUS_GUARD_GEOIP_DB points at a readable
+    GeoLite2/GeoIP2 country .mmdb. ``get_country`` returns ``None`` rather than
+    raising when an IP can't be resolved, as the protocol requires.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        import maxminddb
+
+        self._reader = maxminddb.open_database(db_path)
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._reader is not None
+
+    async def initialize(self) -> None:
+        return None
+
+    async def initialize_redis(self, redis_handler: object) -> None:
+        return None
+
+    async def initialize_agent(self, agent_handler: object) -> None:
+        return None
+
+    def get_country(self, ip: str) -> str | None:
+        try:
+            record = self._reader.get(ip)
+        except Exception:
+            return None
+        if isinstance(record, dict):
+            country = record.get("country") or record.get("registered_country")
+            if isinstance(country, dict):
+                code = country.get("iso_code")
+                if isinstance(code, str):
+                    return code
+        return None
+
+    async def refresh(self) -> None:
+        return None
+
+    def close(self) -> None:
+        if self._reader is not None:
+            self._reader.close()
+            self._reader = None
+
+
+def _geoip_handler(blocked_countries: list[str]):
+    db_path = os.getenv("ODYSSEUS_GUARD_GEOIP_DB", "").strip()
+    if not blocked_countries:
+        return None
+    if not db_path:
+        logger.warning(
+            "guard: ODYSSEUS_GUARD_BLOCK_COUNTRIES needs ODYSSEUS_GUARD_GEOIP_DB; ignored"
+        )
+        return None
+    try:
+        return _MaxMindGeoIPHandler(db_path)
+    except Exception:
+        logger.warning("guard: could not open GeoIP DB %r; country blocking disabled", db_path)
+        return None
+
+
 _CREDENTIAL_PATTERNS = [
     re.compile(r"sk-ant-[a-zA-Z0-9\-_]{15,}"),
     re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9]{20,}\b"),
@@ -121,11 +193,16 @@ if GUARD_ENABLED:
     from guard_core.models import ThreatBanConfig
 
     _passive = _passive_mode()
+    _proxies = _env_list("ODYSSEUS_GUARD_TRUSTED_PROXIES")
+    _blocked_countries = _env_list("ODYSSEUS_GUARD_BLOCK_COUNTRIES")
+    _geo = _geoip_handler(_blocked_countries)
+    if _geo is None:
+        _blocked_countries = []
 
     security_config = SecurityConfig(
-        trusted_proxies=[],
+        trusted_proxies=_proxies,
         trusted_proxy_depth=1,
-        trust_x_forwarded_proto=False,
+        trust_x_forwarded_proto=bool(_proxies),
         enable_redis=False,
         passive_mode=_passive,
         # Fail open while calibrating in passive mode so a WAF edge case on
@@ -133,6 +210,13 @@ if GUARD_ENABLED:
         # an operator flips to active enforcement.
         fail_secure=not _passive,
         enforce_https=False,
+        # Opt-in geo/cloud perimeter (default off). Effective only when guard
+        # sees the real client IP: direct exposure, or a proxy declared via
+        # ODYSSEUS_GUARD_TRUSTED_PROXIES. block_clouds sheds cloud-hosted
+        # crawlers/scrapers; blocked_countries needs a MaxMind DB.
+        block_cloud_providers=({"AWS", "GCP", "Azure"} if _block_clouds() else None),
+        geo_ip_handler=_geo,
+        blocked_countries=frozenset(_blocked_countries),
         exclude_paths=[
             "/static",
             "/api/health",

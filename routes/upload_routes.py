@@ -14,6 +14,7 @@ from core.database import SessionLocal, GalleryImage
 from src.auth_helpers import effective_user
 from src.constants import GENERATED_IMAGES_DIR
 from src.upload_handler import count_recent_uploads
+from core.guard_deco import content_type, no_waf
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ def setup_upload_routes(upload_handler):
             db.close()
     
     @router.post("")
+    @no_waf()
     async def api_upload(request: Request, files: List[UploadFile] = File(...)):
         """Upload files with enhanced security and organization."""
         if not files:
@@ -306,6 +308,7 @@ def setup_upload_routes(upload_handler):
         return {"text": text, "cached": False}
 
     @router.put("/{file_id}/vision")
+    @content_type(["application/json"])
     async def put_vision_text(request: Request, file_id: str):
         """Persist a user-edited vision/OCR text for an attachment. Stored in
         the same cache file so the chat send picks it up as the override."""

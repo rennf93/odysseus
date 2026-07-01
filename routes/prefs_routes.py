@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Request
 from src.auth_helpers import get_current_user
 from src.constants import USER_PREFS_FILE
+from core.guard_deco import content_type
 
 PREFS_FILE = USER_PREFS_FILE
 
@@ -81,6 +82,7 @@ def setup_prefs_routes():
         return {"key": key, "value": prefs.get(key)}
 
     @router.put("/{key}")
+    @content_type(["application/json"])
     async def set_pref(request: Request, key: str, body: dict):
         user = get_current_user(request)
         prefs = _load_for_user(user)

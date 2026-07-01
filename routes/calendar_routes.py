@@ -14,6 +14,7 @@ from dateutil.rrule import rrulestr
 from core.database import SessionLocal, CalendarCal, CalendarDeletedEvent, CalendarEvent
 from src.auth_helpers import require_user
 from src.upload_limits import read_upload_limited, ICS_MAX_BYTES
+from core.guard_deco import content_type, usage_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -710,6 +711,8 @@ def setup_calendar_routes() -> APIRouter:
         }
 
     @router.post("/config")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def save_config(request: Request):
         """Legacy single-account endpoint — upserts the first account."""
         owner = _require_user(request)
@@ -767,6 +770,8 @@ def setup_calendar_routes() -> APIRouter:
         return {"accounts": safe}
 
     @router.post("/config/accounts")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def add_caldav_account(request: Request):
         """Add a new CalDAV account."""
         import uuid as _uuid
@@ -796,6 +801,8 @@ def setup_calendar_routes() -> APIRouter:
         return {"ok": True, "id": new_acc["id"]}
 
     @router.put("/config/accounts/{account_id}")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def update_caldav_account(account_id: str, request: Request):
         """Update an existing CalDAV account by id."""
         owner = _require_user(request)
@@ -837,6 +844,8 @@ def setup_calendar_routes() -> APIRouter:
         return {"ok": True}
 
     @router.post("/test")
+    @content_type(["application/json"])
+    @usage_monitor(10, 3600, "log")
     async def test_connection(request: Request):
         """Probe a CalDAV server with a PROPFIND. Accepts an optional body:
         {url, username, password} to test before saving, or {account_id} to
@@ -1038,6 +1047,7 @@ def setup_calendar_routes() -> APIRouter:
             db.close()
 
     @router.post("/events")
+    @content_type(["application/json"])
     async def create_event(request: Request, data: EventCreate):
         owner = _require_user(request)
         db = SessionLocal()
@@ -1099,6 +1109,7 @@ def setup_calendar_routes() -> APIRouter:
             db.close()
 
     @router.put("/events/{uid}")
+    @content_type(["application/json"])
     async def update_event(request: Request, uid: str, data: EventUpdate):
         owner = _require_user(request)
         try:
@@ -1433,6 +1444,7 @@ def setup_calendar_routes() -> APIRouter:
             db.close()
 
     @router.post("/quick-parse")
+    @content_type(["application/json"])
     async def quick_parse(request: Request):
         """Parse a natural-language event description into structured fields.
 

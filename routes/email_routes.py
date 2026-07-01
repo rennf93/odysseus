@@ -38,6 +38,7 @@ from src.constants import DATA_DIR
 
 from src.llm_core import llm_call_async
 from src.upload_limits import read_upload_limited, EMAIL_COMPOSE_UPLOAD_MAX_BYTES
+from core.guard_deco import content_type, usage_monitor
 
 from routes.email_helpers import (
     _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
@@ -2248,6 +2249,8 @@ def setup_email_routes():
         _cleanup_compose_uploads(attachments)
 
     @router.post("/schedule")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def schedule_email(req: dict, owner: str = Depends(require_owner)):
         """Schedule an email to be sent at a specific time. ISO8601 UTC."""
         import sqlite3
@@ -2473,6 +2476,8 @@ def setup_email_routes():
             return {"contacts": [], "error": "Mail operation failed"}
 
     @router.post("/send")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def send_email(req: SendEmailRequest, background_tasks: BackgroundTasks, owner: str = Depends(require_owner)):
         """Queue an email for SMTP delivery. Returns immediately; send runs in background.
 
@@ -2663,6 +2668,7 @@ def setup_email_routes():
         }
 
     @router.post("/draft")
+    @content_type(["application/json"])
     async def save_draft(req: SendEmailRequest, owner: str = Depends(require_owner)):
         """Save email as draft in IMAP Drafts folder.
 
@@ -2715,6 +2721,7 @@ def setup_email_routes():
         return {"success": True, "message": "Draft saved"}
 
     @router.post("/extract-style")
+    @content_type(["application/json"])
     async def extract_writing_style(req: ExtractStyleRequest, owner: str = Depends(require_owner)):
         """Extract writing style from sent emails using LLM.
 
@@ -2818,6 +2825,7 @@ def setup_email_routes():
             return {"success": False, "error": "Mail operation failed"}
 
     @router.post("/summarize")
+    @content_type(["application/json"])
     async def summarize_email(data: dict, owner: str = Depends(require_owner)):
         """Generate a quick AI summary of an email body."""
         try:
@@ -2936,6 +2944,7 @@ def setup_email_routes():
             return {"success": False, "error": "Mail operation failed"}
 
     @router.post("/ai-reply")
+    @content_type(["application/json"])
     async def ai_reply(data: dict, owner: str = Depends(require_owner)):
         """Generate an AI-drafted reply to an email using the user's writing style."""
         try:
@@ -3191,6 +3200,7 @@ def setup_email_routes():
         return {"style": settings.get("email_writing_style", "")}
 
     @router.put("/style")
+    @content_type(["application/json"])
     async def update_writing_style(data: dict, owner: str = Depends(require_user)):
         """Manually update the writing style prompt."""
         settings = _load_settings()
@@ -3214,6 +3224,8 @@ def setup_email_routes():
         return cfg
 
     @router.put("/config")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def update_email_config(data: dict, owner: str = Depends(require_owner)):
         """Update email configuration.
 
@@ -3342,6 +3354,8 @@ def setup_email_routes():
             db.close()
 
     @router.post("/accounts")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def create_email_account(data: dict, owner: str = Depends(require_owner)):
         """Create a new email account."""
         from core.database import SessionLocal, EmailAccount
@@ -3398,6 +3412,8 @@ def setup_email_routes():
             db.close()
 
     @router.put("/accounts/{account_id}")
+    @content_type(["application/json"])
+    @usage_monitor(5, 3600, "log")
     async def update_email_account(account_id: str, data: dict, owner: str = Depends(require_user)):
         """Update an email account. Passwords only overwrite if non-empty."""
         # Path param account_id — dep validated via Query, re-check the path-param value.
@@ -3464,6 +3480,8 @@ def setup_email_routes():
             db.close()
 
     @router.post("/accounts/test")
+    @content_type(["application/json"])
+    @usage_monitor(10, 3600, "log")
     async def test_account_config(req: Request, owner: str = Depends(require_user)):
         """Try to actually connect to the provided IMAP (and optionally SMTP)
         server with the given credentials. Lets the user verify a config
