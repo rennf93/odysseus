@@ -1,28 +1,36 @@
 """Optional guard-core perimeter for Odysseus.
 
-This module wires the ``fastapi-guard`` / ``guard-core`` security engine in as an
-opt-in outer perimeter (rate-limit ceilings, WAF/recon detection, honeypot
-auto-ban, per-route size/content-type caps, and log-only signals for
-credential-into-corpus and stored prompt-injection). It is disabled by default.
+Wires the ``fastapi-guard`` / ``guard-core`` engine in as an opt-in outer
+perimeter: per-IP rate-limit ceilings, WAF/recon detection, honeypot auto-ban,
+and a log-only signal for credentials or prompt-injection markers written into
+the searchable corpus. Disabled by default.
 
-Design contract:
+Contract:
 - When ``ODYSSEUS_GUARD_ENABLED`` is not ``true`` the guard packages are never
-  imported, ``guard_deco`` stays ``None``, and every decorator in
-  ``core.guard_deco`` degrades to a no-op. Odysseus then behaves byte-for-byte as
-  if this module did not exist, and ``fastapi-guard`` need not be installed.
+  imported and ``security_config`` / ``guard_deco`` stay ``None``. Odysseus then
+  behaves exactly as if this module did not exist, and ``fastapi-guard`` need not
+  be installed.
 - Odysseus already owns security headers, CORS, auth, outbound SSRF validation,
-  secret redaction, owner-scope, and upload size caps. The guard therefore
-  disables its overlapping subsystems (headers/CORS) and augments the rest.
-- The engine ships in ``passive_mode`` (log-only, never blocks) until an operator
-  reviews the JSON logs and flips ``ODYSSEUS_GUARD_PASSIVE=false``. This matches
-  Odysseus's existing stance of wrapping untrusted content rather than rejecting
-  it (see ``src/prompt_security.py``).
+  secret redaction, owner-scope, and upload size caps. The perimeter disables
+  its overlapping subsystems (headers/CORS) and augments the rest.
+- It ships in ``passive_mode`` (log-only) until an operator reviews the JSON
+  logs and sets ``ODYSSEUS_GUARD_PASSIVE=false``. This mirrors Odysseus's stance
+  of wrapping untrusted content rather than rejecting it (src/prompt_security.py).
+
+Content inspection is done by a single global ``custom_request_check`` rather
+than per-route decorators, because fastapi-guard 7.2.0 resolves per-route
+decorator config by exact path and therefore cannot attach it to FastAPI
+path-parameter routes (e.g. ``/api/memory/{id}``). The global hook runs on every
+request, so it covers parameterised routes too. It only ever logs.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+
+logger = logging.getLogger("odysseus.guard")
 
 GUARD_ENABLED = os.getenv("ODYSSEUS_GUARD_ENABLED", "false").lower() == "true"
 
@@ -35,92 +43,101 @@ def _emergency_mode() -> bool:
     return os.getenv("ODYSSEUS_GUARD_EMERGENCY", "false").lower() == "true"
 
 
+_CREDENTIAL_PATTERNS = [
+    re.compile(r"sk-ant-[a-zA-Z0-9\-_]{15,}"),
+    re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"postgres(?:ql)?://[^:\s]+:[^@\s]{4,}@"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+]
+
+_INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(?:all\s+)?(?:previous|above|prior)\s+(?:instructions?|prompts?)", re.I),
+    re.compile(r"you\s+are\s+now\s+(?:a|an|the|DAN|developer\s+mode)", re.I),
+    re.compile(r"disregard\s+(?:your|the)\s+(?:system\s+prompt|rules|guidelines)", re.I),
+    re.compile(r"<\|(?:im_start|im_end|system|user|assistant)\|>", re.I),
+    re.compile(r"\[INST\]|\[/INST\]|\[\[SYSTEM\]\]", re.I),
+]
+
+# Paths whose bodies land in the searchable/RAG corpus: scan for secrets being
+# persisted where a later agent read could surface them. Deliberately excludes
+# the key-config routes (session, model-endpoints, embeddings, auth/integrations,
+# v1/chat) that legitimately carry API keys.
+_CORPUS_WRITE_RE = re.compile(
+    r"^/api/(?:memory|notes|documents?|skills|personal|import|codex/(?:memory|documents))(?=/|$)"
+)
+
+# Paths that set stored instructions later replayed to an LLM/agent.
+_INSTRUCTION_WRITE_RE = re.compile(
+    r"^/api/(?:assistant/settings|skills/builtin|tasks|chat|chat_stream|v1/chat)(?=/|$)"
+)
+
+_SCAN_BYTES = 65536
+
+
+def _has_credential(raw: str) -> bool:
+    return any(pattern.search(raw) for pattern in _CREDENTIAL_PATTERNS)
+
+
+def _has_injection(raw: str) -> bool:
+    return any(pattern.search(raw) for pattern in _INJECTION_PATTERNS)
+
+
+async def _global_content_scan(request):
+    """Global, log-only content scanner (fires on every request, incl. param routes).
+
+    Emits a warning when a credential format is being written into the corpus, or
+    when a role-override marker appears in a stored-instruction body. Never blocks;
+    returns None so the request always proceeds.
+    """
+    try:
+        if request.method not in ("POST", "PUT", "PATCH"):
+            return None
+        path = request.url_path
+        scan_credentials = bool(_CORPUS_WRITE_RE.match(path))
+        scan_injection = bool(_INSTRUCTION_WRITE_RE.match(path))
+        if not (scan_credentials or scan_injection):
+            return None
+        if "multipart" in request.headers.get("content-type", "").lower():
+            return None
+        raw = (await request.body())[:_SCAN_BYTES].decode("utf-8", "ignore")
+        if scan_credentials and _has_credential(raw):
+            logger.warning("guard: credential-format content written to corpus at %s %s", request.method, path)
+        if scan_injection and _has_injection(raw):
+            logger.warning("guard: prompt-injection marker in stored instruction at %s %s", request.method, path)
+    except Exception:
+        return None
+    return None
+
+
 security_config = None
 guard_deco = None
-scan_credentials_validator = None
-scan_injection_validator = None
 
 
 if GUARD_ENABLED:
     from guard import SecurityConfig, SecurityDecorator
-    from guard.adapters import StarletteResponseFactory
-    from guard_core.models import BehaviorRuleConfig, ThreatBanConfig
+    from guard_core.models import ThreatBanConfig
 
-    _factory = StarletteResponseFactory()
-
-    # Credential formats that must never be written into the searchable/RAG
-    # corpus. Applied ONLY to content-corpus routes (memory/notes/documents/
-    # skills/import) — never to the key-config routes that legitimately carry
-    # secrets (session, model-endpoints, embeddings, auth/integrations, v1/chat).
-    _CREDENTIAL_PATTERNS = [
-        re.compile(r"sk-ant-[a-zA-Z0-9\-_]{15,}"),
-        re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b"),
-        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
-        re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-        re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
-        re.compile(r"postgres(?:ql)?://[^:\s]+:[^@\s]{4,}@"),
-        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    ]
-
-    # Role-override / delimiter-injection phrasing. Flagged as a log signal on
-    # stored-instruction surfaces (assistant persona, skill overrides, scheduled
-    # task prompts). In passive_mode this only logs; it never rejects content.
-    _INJECTION_PATTERNS = [
-        re.compile(r"ignore\s+(?:all\s+)?(?:previous|above|prior)\s+(?:instructions?|prompts?)", re.I),
-        re.compile(r"you\s+are\s+now\s+(?:a|an|the|DAN|developer\s+mode)", re.I),
-        re.compile(r"disregard\s+(?:your|the)\s+(?:system\s+prompt|rules|guidelines)", re.I),
-        re.compile(r"<\|(?:im_start|im_end|system|user|assistant)\|>", re.I),
-        re.compile(r"\[INST\]|\[/INST\]|\[\[SYSTEM\]\]", re.I),
-    ]
-
-    async def _scan_credentials(request):
-        try:
-            raw = (await request.body()).decode("utf-8", "ignore")[:16384]
-        except Exception:
-            return None
-        for pattern in _CREDENTIAL_PATTERNS:
-            if pattern.search(raw):
-                return _factory.create_response(
-                    '{"error":"credential-like content rejected"}', 400
-                )
-        return None
-
-    async def _scan_injection(request):
-        try:
-            raw = (await request.body()).decode("utf-8", "ignore")[:16384]
-        except Exception:
-            return None
-        for pattern in _INJECTION_PATTERNS:
-            if pattern.search(raw):
-                return _factory.create_response(
-                    '{"error":"prompt-injection pattern flagged"}', 400
-                )
-        return None
-
-    scan_credentials_validator = _scan_credentials
-    scan_injection_validator = _scan_injection
+    _passive = _passive_mode()
 
     security_config = SecurityConfig(
         trusted_proxies=[],
         trusted_proxy_depth=1,
         trust_x_forwarded_proto=False,
         enable_redis=False,
-        passive_mode=_passive_mode(),
-        fail_secure=True,
+        passive_mode=_passive,
+        # Fail open while calibrating in passive mode so a WAF edge case on
+        # legitimate AI content can never turn into a 500; fail secure once
+        # an operator flips to active enforcement.
+        fail_secure=not _passive,
         enforce_https=False,
         exclude_paths=[
+            "/static",
             "/api/health",
             "/api/version",
-            "/api/auth/setup",
-            "/api/auth/signup",
-            "/api/auth/login",
-            "/api/auth/logout",
-            "/api/auth/status",
-            "/api/auth/features",
-            "/api/auth/settings",
-            "/api/auth/integrations/presets",
             "/login",
-            "/static",
             "/docs",
             "/redoc",
             "/openapi.json",
@@ -143,11 +160,17 @@ if GUARD_ENABLED:
             "/api/import": (5, 300),
         },
         enable_penetration_detection=True,
+        # Fields whose values are legitimately code/prose/commands in this AI
+        # workspace and would otherwise trip the WAF on normal use. Applied
+        # globally because fastapi-guard 7.2.0 cannot attach per-route detection
+        # exclusions to include_router / path-parameter routes.
         excluded_detection_body_fields={
             "message", "content", "text", "prompt", "personality", "procedure",
             "pitfalls", "solution", "when_to_use", "description", "query",
             "payload", "thumbnail", "items", "instruction", "original_text",
-            "body", "code", "diff",
+            "body", "code", "diff", "command", "cmd", "args",
+            "title", "name", "subject", "label", "tags", "topic", "summary",
+            "notes", "steps", "verification", "system_prompt",
         },
         excluded_detection_headers={
             "authorization", "x-api-key", "x-auth-token",
@@ -165,16 +188,7 @@ if GUARD_ENABLED:
             "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
             "cms_probing": ThreatBanConfig(threshold=3, duration=86400),
         },
-        global_behavior_rules=[
-            BehaviorRuleConfig(
-                rule_type="return_pattern", threshold=40, window=300,
-                pattern="status:404", action="log", correlate_with_detection=True,
-            ),
-            BehaviorRuleConfig(
-                rule_type="return_pattern", threshold=20, window=120,
-                pattern="status:401", action="log", correlate_with_detection=True,
-            ),
-        ],
+        custom_request_check=_global_content_scan,
         log_format="json",
         log_suspicious_level="WARNING",
         log_request_level=None,
