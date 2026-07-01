@@ -40,4 +40,4 @@ markitdown[docx,pptx,xlsx,xls]==0.1.6
 # detection, honeypot auto-ban, per-route size/content-type caps, and log-only
 # credential-into-corpus / prompt-injection signals. Wired in core/guard.py and
 # only imported when the flag is set, so the default install stays unchanged.
-fastapi-guard>=7.2.0
+fastapi-guard>=7.2.2
