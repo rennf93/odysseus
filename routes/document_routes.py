@@ -12,7 +12,7 @@ from core.database import SessionLocal, Document, DocumentVersion
 from core.database import Session as DbSession
 from src.auth_helpers import get_current_user, _auth_disabled
 from src.constants import MAIL_ATTACHMENTS_DIR
-from core.guard_deco import content_type, usage_monitor
+from core.guard_deco import content_type, no_waf, usage_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
 
     # ---- POST /api/documents/import-pdf ----
     @router.post("/api/documents/import-pdf")
+    @no_waf()
     async def import_pdf(
         request: Request,
         file: UploadFile = File(...),

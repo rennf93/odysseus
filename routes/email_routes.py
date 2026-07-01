@@ -38,7 +38,7 @@ from src.constants import DATA_DIR
 
 from src.llm_core import llm_call_async
 from src.upload_limits import read_upload_limited, EMAIL_COMPOSE_UPLOAD_MAX_BYTES
-from core.guard_deco import content_type, usage_monitor
+from core.guard_deco import content_type, no_waf, usage_monitor
 
 from routes.email_helpers import (
     _strip_think, _extract_reply, _apply_email_style_mechanics, require_owner, require_user, _assert_owns_account,
@@ -2164,6 +2164,7 @@ def setup_email_routes():
             return {"success": False, "error": "Mail operation failed"}
 
     @router.post("/compose-upload")
+    @no_waf()
     async def compose_upload(file: UploadFile = File(...), owner: str = Depends(require_owner)):
         """Upload a file for attaching to a compose email. Returns a token."""
         try:

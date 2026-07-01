@@ -244,10 +244,12 @@ if GUARD_ENABLED:
             "/api/import": (5, 300),
         },
         enable_penetration_detection=True,
-        # Fields whose values are legitimately code/prose/commands in this AI
-        # workspace and would otherwise trip the WAF on normal use. Applied
-        # globally because fastapi-guard 7.2.0 cannot attach per-route detection
-        # exclusions to include_router / path-parameter routes.
+        # Fields whose values are legitimately code / prose / paths / URLs /
+        # commands in this AI workspace and would otherwise trip the WAF on
+        # normal use. Applied globally: penetration detection scans every
+        # top-level JSON body key, so one central allowlist covers all routes.
+        # Multipart uploads, whose raw bodies bypass key-level exclusion, use
+        # @no_waf at the route instead.
         excluded_detection_body_fields={
             "message", "content", "text", "prompt", "personality", "procedure",
             "pitfalls", "solution", "when_to_use", "description", "query",
@@ -255,6 +257,13 @@ if GUARD_ENABLED:
             "body", "code", "diff", "command", "cmd", "args",
             "title", "name", "subject", "label", "tags", "topic", "summary",
             "notes", "steps", "verification", "system_prompt",
+            "messages", "metadata", "value", "markdown", "task", "problem",
+            "body_extra", "original_body", "user_hint", "style", "location",
+            "address", "directory", "local_dir", "include", "env_prefix",
+            "url", "endpoint_url", "base_url", "server_url", "carddav_url",
+            "_endpoint", "vcf", "csv", "pip", "cron_expression", "avatar",
+            "webhook_payload_template", "llm_persona",
+            "memories", "presets", "skills", "settings", "preferences",
         },
         excluded_detection_headers={
             "authorization", "x-api-key", "x-auth-token",

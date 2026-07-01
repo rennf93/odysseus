@@ -31,7 +31,7 @@ from src.auth_helpers import get_current_user, require_user
 from src.endpoint_resolver import resolve_endpoint
 from src.task_endpoint import resolve_task_endpoint
 from src.upload_limits import read_upload_limited, MEMORY_IMPORT_MAX_BYTES
-from core.guard_deco import usage_monitor
+from core.guard_deco import no_waf, usage_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +323,7 @@ def setup_memory_routes(memory_manager: MemoryManager, session_manager: SessionM
         }
 
     @router.post("/import")
+    @no_waf()
     async def import_memories_from_file(
         request: Request,
         session: str | None = Form(None),

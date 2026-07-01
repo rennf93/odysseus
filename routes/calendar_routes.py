@@ -14,7 +14,7 @@ from dateutil.rrule import rrulestr
 from core.database import SessionLocal, CalendarCal, CalendarDeletedEvent, CalendarEvent
 from src.auth_helpers import require_user
 from src.upload_limits import read_upload_limited, ICS_MAX_BYTES
-from core.guard_deco import content_type, usage_monitor
+from core.guard_deco import content_type, no_waf, usage_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -1236,6 +1236,7 @@ def setup_calendar_routes() -> APIRouter:
     # upload would OOM.
 
     @router.post("/import")
+    @no_waf()
     async def import_ics(request: Request, file: UploadFile = File(...), calendar_name: str = ""):
         """Import events from an .ics file (scoped to caller's account)."""
         from icalendar import Calendar as iCal
