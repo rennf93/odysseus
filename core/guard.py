@@ -265,6 +265,7 @@ if GUARD_ENABLED:
             "webhook_payload_template", "llm_persona",
             "memories", "presets", "skills", "settings", "preferences",
             "context", "workspace", "approved_plan", "search_context",
+            "target_language", "email_translate_language",
         },
         excluded_detection_headers={
             "authorization", "x-api-key", "x-auth-token",
