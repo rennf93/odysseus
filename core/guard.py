@@ -246,10 +246,10 @@ if GUARD_ENABLED:
         enable_penetration_detection=True,
         # Fields whose values are legitimately code / prose / paths / URLs /
         # commands in this AI workspace and would otherwise trip the WAF on
-        # normal use. Applied globally: penetration detection scans every
-        # top-level JSON body key, so one central allowlist covers all routes.
-        # Multipart uploads, whose raw bodies bypass key-level exclusion, use
-        # @no_waf at the route instead.
+        # normal use. One central allowlist: guard-core matches these names in
+        # JSON bodies at any depth, in x-www-form-urlencoded fields, and in
+        # multipart text parts, so it covers every route. Multipart file parts
+        # are skipped by the engine; the upload routes also carry @no_waf.
         excluded_detection_body_fields={
             "message", "content", "text", "prompt", "personality", "procedure",
             "pitfalls", "solution", "when_to_use", "description", "query",
@@ -264,6 +264,7 @@ if GUARD_ENABLED:
             "_endpoint", "vcf", "csv", "pip", "cron_expression", "avatar",
             "webhook_payload_template", "llm_persona",
             "memories", "presets", "skills", "settings", "preferences",
+            "context", "workspace", "approved_plan", "search_context",
         },
         excluded_detection_headers={
             "authorization", "x-api-key", "x-auth-token",
